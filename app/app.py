@@ -10,6 +10,7 @@ import pandas as pd
 import requests
 import streamlit as st
 import tensorflow as tf
+from fpdf import FPDF
 from PIL import Image
 
 st.set_page_config(page_title="AgriVision", page_icon="🌾", layout="wide")
@@ -156,6 +157,115 @@ def band(sev):
     return "High", "#dc2626"
 
 
+# ---------------------------------------------------------------- PDF report
+def _t(s):
+    """Make text safe for the built-in PDF fonts (latin-1 only)."""
+    return str(s).encode("latin-1", "replace").decode("latin-1")
+
+
+def _pil(arr, max_side=700):
+    im = Image.fromarray(arr)
+    im.thumbnail((max_side, max_side))
+    return im
+
+
+def build_pdf(results, summary, temp, hum, rain, include_cam):
+    pdf = FPDF(format="A4")
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    # banner
+    pdf.set_fill_color(20, 83, 45)
+    pdf.rect(0, 0, 210, 32, style="F")
+    pdf.set_xy(10, 8)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Helvetica", "B", 22)
+    pdf.cell(0, 9, "AgriVision Report", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_x(10)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 6, "Wheat leaf disease diagnosis, severity and yield-loss estimation",
+             new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_text_color(31, 41, 55)
+    pdf.set_y(38)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 6, f"Generated: {datetime.datetime.now():%Y-%m-%d %H:%M}",
+             new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Weather used: {temp:.1f} C, {hum:.0f}% humidity, {rain:.1f} mm/day",
+             new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Photos analysed: {len(results)}", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
+
+    # summary table
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 8, "Summary", new_x="LMARGIN", new_y="NEXT")
+    cols = [("File", 62), ("Disease", 32), ("Conf. (%)", 28),
+            ("Severity (%)", 30), ("Yield loss (%)", 34)]
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.set_fill_color(220, 252, 231)
+    for name, w in cols:
+        pdf.cell(w, 7, name, border=1, fill=True, new_x="RIGHT", new_y="TOP")
+    pdf.ln(7)
+    pdf.set_font("Helvetica", "", 9)
+    for _, row in summary.iterrows():
+        vals = [_t(str(row["File"])[:34]), row["Disease"], f"{row['Confidence (%)']:.1f}",
+                f"{row['Severity (%)']:.1f}", f"{row['Est. yield loss (%)']:.1f}"]
+        for (name, w), v in zip(cols, vals):
+            pdf.cell(w, 7, str(v), border=1, new_x="RIGHT", new_y="TOP")
+        pdf.ln(7)
+
+    # one page per photo
+    for r in results:
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 14)
+        pdf.cell(0, 8, _t(r["name"]), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.set_text_color(20, 83, 45)
+        pdf.cell(0, 7, f"Diagnosis: {r['disease']} ({r['confidence']:.1f}% confidence)",
+                 new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(31, 41, 55)
+        pdf.set_font("Helvetica", "", 11)
+        pdf.cell(0, 6, f"Severity index: {r['severity']:.1f}% ({band(r['severity'])[0]})",
+                 new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, f"Estimated yield loss: {r['loss']:.1f}%",
+                 new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(3)
+
+        y = pdf.get_y()
+        panels = [("Photo", r["img"]), ("Severity map", r["overlay"])]
+        if include_cam:
+            panels.append(("Grad-CAM", cam_for(r["bytes"], r["best"])))
+        x = 10
+        for title, arr in panels:
+            pdf.set_xy(x, y)
+            pdf.set_font("Helvetica", "I", 9)
+            pdf.cell(58, 5, title, new_x="RIGHT", new_y="TOP")
+            pdf.image(_pil(arr), x=x, y=y + 6, w=58, h=78, keep_aspect_ratio=True)
+            x += 63
+        pdf.set_y(y + 90)
+
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(0, 7, "Class probabilities", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 10)
+        for c, p in sorted(zip(CLASSES, r["probs"]), key=lambda t: -t[1]):
+            pdf.cell(0, 5, f"{c}: {p * 100:.1f}%", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(3)
+
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(0, 7, "Recommended action", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 10)
+        pdf.multi_cell(0, 5.5, _t(ADVICE[r["disease"]]), new_x="LMARGIN", new_y="NEXT")
+
+    pdf.ln(6)
+    pdf.set_font("Helvetica", "I", 8)
+    pdf.set_text_color(100, 116, 139)
+    pdf.multi_cell(0, 4.5, _t(
+        "Decision-support prototype, not a replacement for an agricultural expert. "
+        "Severity is a rough colour-based index that tends to overestimate, and "
+        "yield-loss labels are simulated."), new_x="LMARGIN", new_y="NEXT")
+    return bytes(pdf.output())
+
+
 # ---------------------------------------------------------------- sidebar
 st.sidebar.header("Settings")
 st.sidebar.selectbox("Crop", ["Wheat"])
@@ -194,7 +304,7 @@ if not files:
                 'disease, and image analysis estimates severity.</p></div>',
                 unsafe_allow_html=True)
     c3.markdown('<div class="card"><h4>3. Act</h4><p>Get the estimated yield loss, a '
-                'recommended action and a Grad-CAM explanation.</p></div>',
+                'recommended action, a Grad-CAM explanation and a PDF report.</p></div>',
                 unsafe_allow_html=True)
     st.stop()
 
@@ -222,6 +332,7 @@ summary = pd.DataFrame([{
     "Severity (%)": round(r["severity"], 1),
     "Est. yield loss (%)": round(r["loss"], 1)} for r in results])
 
+# ---------------------------------------------------------------- summary + downloads
 if len(results) > 1:
     st.subheader("Summary")
     k1, k2, k3 = st.columns(3)
@@ -236,9 +347,23 @@ if len(results) > 1:
         "Est. yield loss (%)": st.column_config.ProgressColumn(
             "Est. yield loss (%)", min_value=0, max_value=100, format="%.1f"),
     })
-    st.download_button("Download results (CSV)", summary.to_csv(index=False).encode("utf-8"),
-                       "agrivision_results.csv", "text/csv")
-    st.subheader("Details")
+
+st.subheader("Download")
+d1, d2, d3 = st.columns([1, 1, 2])
+d1.download_button("Download results (CSV)", summary.to_csv(index=False).encode("utf-8"),
+                   "agrivision_results.csv", "text/csv", use_container_width=True)
+
+sig = (tuple(f"{r['name']}-{len(r['bytes'])}" for r in results),
+       round(temp, 1), round(hum), round(rain, 1), show_cam)
+if d2.button("Prepare PDF report", type="primary", use_container_width=True):
+    with st.spinner("Building PDF report..."):
+        st.session_state["pdf"] = (sig, build_pdf(results, summary, temp, hum, rain, show_cam))
+pdf_state = st.session_state.get("pdf")
+if pdf_state and pdf_state[0] == sig:
+    d3.download_button("Download PDF report", pdf_state[1], "agrivision_report.pdf",
+                       "application/pdf", use_container_width=True)
+
+st.subheader("Details")
 
 # ---------------------------------------------------------------- per-photo results
 for i, r in enumerate(results):
