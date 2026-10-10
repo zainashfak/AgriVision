@@ -92,8 +92,8 @@ leaf_model = load_leaf_model()
 yield_model = load_yield_model()
 
 st.title("AgriVision: Wheat Leaf Diagnosis")
-st.write("Upload a wheat leaf photo to get the disease, severity, estimated yield loss "
-         "and a recommended action.")
+st.write("Upload one or more wheat leaf photos to get the disease, severity, estimated "
+         "yield loss and a recommended action.")
 
 # ---- sidebar: crop, location and weather ----
 st.sidebar.header("Settings")
@@ -115,11 +115,12 @@ if use_live:
         st.sidebar.warning("Could not fetch live weather, using manual values.")
 st.sidebar.write(f"Using: {temp:.1f} C, {hum:.0f}% humidity, {rain:.1f} mm/day")
 
-file = st.file_uploader("Leaf photo", type=["jpg", "jpeg", "png"])
+files = st.file_uploader("Leaf photos (you can select several)",
+                         type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
-if file:
+
+def analyse(file):
     img = np.array(Image.open(file).convert("RGB"))
-    st.image(img, caption="Uploaded leaf", use_container_width=True)
 
     # 1. diagnosis
     x = cv2.resize(img, (IMG_SIZE, IMG_SIZE)).astype("float32")
@@ -142,21 +143,47 @@ if file:
         cam_overlay = None
         st.warning(f"Grad-CAM unavailable: {e}")
 
-    st.subheader(f"Prediction: {disease}")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Confidence", f"{probs[best] * 100:.1f}%")
-    c2.metric("Severity", f"{severity:.1f}%")
-    c3.metric("Est. yield loss", f"{loss:.1f}%")
+    return img, probs, best, disease, severity, sev_overlay, loss, cam_overlay
 
-    st.info(f"Recommended action: {ADVICE[disease]}")
 
-    col_a, col_b = st.columns(2)
-    col_a.image(sev_overlay, caption="Severity: green = healthy, red = diseased",
-                use_container_width=True)
-    if cam_overlay is not None:
-        col_b.image(cam_overlay, caption="Grad-CAM: areas that influenced the diagnosis",
+if files:
+    results = []
+    for file in files:
+        results.append((file.name, analyse(file)))
+
+    # summary table for all uploaded photos
+    if len(results) > 1:
+        st.subheader("Summary")
+        st.dataframe(pd.DataFrame([{
+            "File": name,
+            "Disease": r[3],
+            "Confidence (%)": round(float(r[1][r[2]]) * 100, 1),
+            "Severity (%)": round(r[4], 1),
+            "Est. yield loss (%)": round(r[6], 1),
+        } for name, r in results]), use_container_width=True)
+
+    # detailed result for each photo
+    for name, (img, probs, best, disease, severity, sev_overlay, loss, cam_overlay) in results:
+        st.divider()
+        st.header(name)
+        st.image(img, caption="Uploaded leaf", use_container_width=True)
+
+        st.subheader(f"Prediction: {disease}")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Confidence", f"{probs[best] * 100:.1f}%")
+        c2.metric("Severity", f"{severity:.1f}%")
+        c3.metric("Est. yield loss", f"{loss:.1f}%")
+
+        st.info(f"Recommended action: {ADVICE[disease]}")
+
+        col_a, col_b = st.columns(2)
+        col_a.image(sev_overlay, caption="Severity: green = healthy, red = diseased",
                     use_container_width=True)
+        if cam_overlay is not None:
+            col_b.image(cam_overlay, caption="Grad-CAM: areas that influenced the diagnosis",
+                        use_container_width=True)
 
-    st.bar_chart({c: float(p) for c, p in zip(CLASSES, probs)})
+        st.bar_chart({c: float(p) for c, p in zip(CLASSES, probs)})
+
     st.caption("Decision-support prototype, not a replacement for an agricultural expert. "
                "Severity is a colour-based estimate and yield-loss labels are simulated.")
