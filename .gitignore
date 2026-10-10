@@ -1,5 +1,5 @@
 venv/
 data/
-models/*.h5
+models/*.keras
 __pycache__/
 .ipynb_checkpoints/
