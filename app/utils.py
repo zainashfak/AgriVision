@@ -1,7 +1,7 @@
 import numpy as np
 import cv2
 import tensorflow as tf
-from tensorflow import keras
+import keras
 
 
 def gradcam(model, img_rgb, class_idx=None, size=224):
